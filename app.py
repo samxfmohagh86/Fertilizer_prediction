@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import logging
+import os
+from supabase import create_client, Client
 
 # إعداد التسجيل
 logging.basicConfig(level=logging.INFO)
@@ -12,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+
+# إعداد Supabase
+supabase_url = os.environ.get('SUPABASE_URL', 'YOUR_SUPABASE_URL')
+supabase_key = os.environ.get('SUPABASE_KEY', 'YOUR_SUPABASE_KEY')
+supabase: Client = create_client(supabase_url, supabase_key)
 
 # تحميل النماذج والمشفرات
 try:
@@ -49,67 +56,26 @@ def get_info():
         'fertilizer_types': list(le_fertilizer.classes_)
     })
 
-@app.route('/validate', methods=['POST'])
-def validate_data():
-    """التحقق من صحة البيانات قبل الإرسال"""
+@app.route('/history', methods=['GET'])
+def get_history():
+    """جلب آخر 10 سجلات من Supabase"""
     try:
-        data = request.get_json()
-        
-        # التحقق من الحقول المطلوبة
-        required_fields = ['temperature', 'moisture', 'rainfall', 'ph', 'nitrogen', 
-                          'phosphorous', 'potassium', 'carbon', 'soil_type', 'crop_type']
-        
-        missing_fields = [field for field in required_fields if field not in data or not data[field]]
-        if missing_fields:
-            return jsonify({
-                'status': 'error',
-                'error': f'الحقول المطلوبة: {", ".join(missing_fields)}'
-            }), 400
-        
-        # التحقق من القيم الرقمية
-        numeric_fields = ['temperature', 'moisture', 'rainfall', 'ph', 'nitrogen', 
-                         'phosphorous', 'potassium', 'carbon']
-        invalid_numeric = []
-        
-        for field in numeric_fields:
-            try:
-                float(data[field])
-            except (ValueError, TypeError):
-                invalid_numeric.append(field)
-        
-        if invalid_numeric:
-            return jsonify({
-                'status': 'error',
-                'error': f'قيم غير رقمية في: {", ".join(invalid_numeric)}'
-            }), 400
-        
-        # التحقق من أنواع التربة والمحاصيل
-        validation_errors = []
-        
-        if data['soil_type'] not in le_soil.classes_:
-            validation_errors.append(f"نوع التربة '{data['soil_type']}' غير مدعوم")
-        
-        if data['crop_type'] not in le_crop.classes_:
-            validation_errors.append(f"نوع المحصول '{data['crop_type']}' غير مدعوم")
-        
-        if validation_errors:
-            return jsonify({
-                'status': 'error',
-                'error': '; '.join(validation_errors),
-                'supported_soil_types': list(le_soil.classes_),
-                'supported_crop_types': list(le_crop.classes_)
-            }), 400
+        response = supabase.table('fertilizer_data')\
+            .select('*')\
+            .order('created_at', desc=True)\
+            .limit(10)\
+            .execute()
         
         return jsonify({
             'status': 'success',
-            'message': 'البيانات صالحة'
+            'data': response.data,
+            'count': len(response.data)
         })
-        
     except Exception as e:
-        logger.error(f"خطأ في التحقق: {str(e)}")
+        logger.error(f"خطأ في جلب السجلات: {str(e)}")
         return jsonify({
             'status': 'error',
-            'error': f'خطأ في التحقق: {str(e)}'
+            'error': f'خطأ في جلب السجلات: {str(e)}'
         }), 500
 
 def calculate_additional_features(temperature, moisture, rainfall, nitrogen, phosphorous, potassium):
