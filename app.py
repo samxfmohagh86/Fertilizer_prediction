@@ -1,76 +1,122 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pickle
+import joblib
 import numpy as np
+import pandas as pd
 
 app = Flask(__name__)
-CORS(app)  # هذا مهم للسماح لطلبات React بالوصول إلى الخادم
+CORS(app)
 
-# تحميل النموذج والبيانات الأخرى اللازمة
-model = pickle.load(open('fertilizer_model.pkl', 'rb'))
-soil_types = ['Sandy', 'Loamy', 'Black', 'Red', 'Clayey']
-crop_types = ['Maize', 'Sugarcane', 'Cotton', 'Tobacco', 'Paddy', 'Barley', 'Wheat', 'Millets', 'Oil seeds', 'Pulses', 'Ground Nuts']
+# تحميل النماذج والمشفرات
+try:
+    model = joblib.load('model.joblib')
+    scaler = joblib.load('scaler.joblib')
+    le_soil = joblib.load('label_encoder_soil.joblib')
+    le_crop = joblib.load('label_encoder_crop.joblib')
+    le_fertilizer = joblib.load('label_encoder_fertilizer.joblib')
+    
+    print("✅ تم تحميل جميع النماذج بنجاح")
+    print(f"فئات التربة: {list(le_soil.classes_)}")
+    print(f"فئات المحاصيل: {list(le_crop.classes_)}")
+    print(f"فئات الأسمدة: {list(le_fertilizer.classes_)}")
+    
+except Exception as e:
+    print(f"❌ خطأ في تحميل النماذج: {str(e)}")
+    raise e
 
 @app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'success', 'message': 'Server is running'})
-
-@app.route('/info', methods=['GET'])
-def info():
+def health_check():
     return jsonify({
         'status': 'success',
-        'soil_types': soil_types,
-        'crop_types': crop_types
+        'message': 'الخادم يعمل بشكل طبيعي',
+        'models_loaded': True
+    })
+
+@app.route('/info', methods=['GET'])
+def get_info():
+    return jsonify({
+        'status': 'success',
+        'soil_types': list(le_soil.classes_),
+        'crop_types': list(le_crop.classes_),
+        'fertilizer_types': list(le_fertilizer.classes_)
     })
 
 @app.route('/predict', methods=['POST'])
-def predict():
+def predict_fertilizer():
     try:
         data = request.get_json()
-
-        # استخراج البيانات من الطلب
-        temperature = float(data['temperature'])
-        moisture = float(data['moisture'])
-        rainfall = float(data['rainfall'])
-        ph = float(data['ph'])
-        nitrogen = float(data['nitrogen'])
-        phosphorous = float(data['phosphorous'])
-        potassium = float(data['potassium'])
-        carbon = float(data['carbon'])
-        soil_type = data['soil_type']
-        crop_type = data['crop_type']
-
-        # تحويل النوع النصي إلى أرقام
-        soil_type_encoded = soil_types.index(soil_type)
-        crop_type_encoded = crop_types.index(crop_type)
-
-        # تجهيز البيانات للإدخال في النموذج
-        input_data = np.array([[temperature, moisture, rainfall, ph, nitrogen, phosphorous, potassium, carbon, soil_type_encoded, crop_type_encoded]])
-
-        # التنبؤ
-        prediction = model.predict(input_data)
-        probabilities = model.predict_proba(input_data)
-
-        # الحصول على جميع الاحتمالات لكل سماد
-        all_probabilities = probabilities[0]
-        fertilizer_classes = model.classes_
-
+        
+        # التحقق من وجود جميع الحقول المطلوبة
+        required_fields = ['temperature', 'moisture', 'rainfall', 'ph', 'nitrogen', 
+                          'phosphorous', 'potassium', 'carbon', 'soil_type', 'crop_type']
+        
+        for field in required_fields:
+            if field not in data or not data[field]:
+                return jsonify({
+                    'status': 'error',
+                    'error': f'الحقل {field} مطلوب'
+                }), 400
+        
+        # تحويل البيانات إلى تنسيق مناسب للنموذج
+        try:
+            # تحويل البيانات الرقمية
+            temperature = float(data['temperature'])
+            moisture = float(data['moisture'])
+            rainfall = float(data['rainfall'])
+            ph = float(data['ph'])
+            nitrogen = float(data['nitrogen'])
+            phosphorous = float(data['phosphorous'])
+            potassium = float(data['potassium'])
+            carbon = float(data['carbon'])
+            
+            # تحويل النصوص باستخدام LabelEncoders
+            soil_type_encoded = le_soil.transform([data['soil_type']])[0]
+            crop_type_encoded = le_crop.transform([data['crop_type']])[0]
+            
+        except (ValueError, KeyError) as e:
+            return jsonify({
+                'status': 'error',
+                'error': 'قيم غير صالحة في البيانات المدخلة'
+            }), 400
+        
+        # تجهيز بيانات الإدخال للنموذج
+        input_features = np.array([[
+            temperature, moisture, rainfall, ph, nitrogen, 
+            phosphorous, potassium, carbon, soil_type_encoded, crop_type_encoded
+        ]])
+        
+        # تطبيق المعايرة (Scaler)
+        input_scaled = scaler.transform(input_features)
+        
+        # الحصول على التنبؤات والاحتمالات
+        prediction_encoded = model.predict(input_scaled)[0]
+        probabilities = model.predict_proba(input_scaled)[0]
+        
+        # فك التشفير للحصول على اسم السماد
+        predicted_fertilizer = le_fertilizer.inverse_transform([prediction_encoded])[0]
+        
         # إنشاء قاموس بالاحتمالات لكل سماد
-        prob_dict = {fertilizer: prob for fertilizer, prob in zip(fertilizer_classes, all_probabilities)}
-
-        # العثور على السماد الموصى به (أعلى احتمال)
-        recommended_fertilizer = prediction[0]
-        confidence = np.max(probabilities)
-
+        all_probabilities = {
+            le_fertilizer.inverse_transform([i])[0]: float(prob) 
+            for i, prob in enumerate(probabilities)
+        }
+        
+        # العثور على أعلى احتمال
+        confidence = max(all_probabilities.values())
+        
         return jsonify({
             'status': 'success',
-            'fertilizer': recommended_fertilizer,
+            'fertilizer': predicted_fertilizer,
             'confidence': confidence,
-            'all_probabilities': prob_dict
+            'all_probabilities': all_probabilities
         })
-
+        
     except Exception as e:
-        return jsonify({'status': 'error', 'error': str(e)})
+        print(f"❌ خطأ في التنبؤ: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': f'حدث خطأ أثناء المعالجة: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=False)
