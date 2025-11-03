@@ -1,119 +1,74 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import pickle
 import numpy as np
-import pandas as pd
-import joblib
 
 app = Flask(__name__)
+CORS(app)  # هذا مهم للسماح لطلبات React بالوصول إلى الخادم
 
-# تحميل النماذج عند بدء التشغيل
-try:
-    model = joblib.load('model.joblib')
-    scaler = joblib.load('scaler.joblib')
-    le_soil = joblib.load('label_encoder_soil.joblib')
-    le_crop = joblib.load('label_encoder_crop.joblib')
-    le_fertilizer = joblib.load('label_encoder_fertilizer.joblib')
-    models_loaded = True
-except Exception as e:
-    print(f"خطأ في تحميل النماذج: {e}")
-    models_loaded = False
+# تحميل النموذج والبيانات الأخرى اللازمة
+model = pickle.load(open('fertilizer_model.pkl', 'rb'))
+soil_types = ['Sandy', 'Loamy', 'Black', 'Red', 'Clayey']
+crop_types = ['Maize', 'Sugarcane', 'Cotton', 'Tobacco', 'Paddy', 'Barley', 'Wheat', 'Millets', 'Oil seeds', 'Pulses', 'Ground Nuts']
 
-def predict_fertilizer(temperature, moisture, rainfall, ph, nitrogen, 
-                      phosphorous, potassium, carbon, soil_type, crop_type):
-    """
-    تنبؤ السماد الموصى به بناءً على المعطيات المدخلة
-    """
-    try:
-        if not models_loaded:
-            return {'status': 'error', 'error': 'النماذج غير محملة'}
-        
-        # ترميز المدخلات الفئوية
-        soil_encoded = le_soil.transform([soil_type])[0]
-        crop_encoded = le_crop.transform([crop_type])[0]
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'success', 'message': 'Server is running'})
 
-        # المعطيات الأساسية
-        input_data = {
-            'Temperature': float(temperature),
-            'Moisture': float(moisture),
-            'Rainfall': float(rainfall),
-            'PH': float(ph),
-            'Nitrogen': float(nitrogen),
-            'Phosphorous': float(phosphorous),
-            'Potassium': float(potassium),
-            'Carbon': float(carbon),
-            'Soil_encoded': soil_encoded,
-            'Crop_encoded': crop_encoded
-        }
-        
-        # إضافة الميزات المحسوبة إذا كان النموذج يستخدمها
-        if hasattr(model, 'feature_names_in_'):
-            features = list(model.feature_names_in_)
-            
-            if 'NPK_ratio' in features:
-                input_data['NPK_ratio'] = nitrogen / (phosphorous + potassium + 1e-8)
-
-            if 'Nutrient_balance' in features:
-                input_data['Nutrient_balance'] = (nitrogen + phosphorous + potassium) / 3
-
-            if 'Environmental_index' in features:
-                input_data['Environmental_index'] = temperature * moisture * rainfall
-        
-        # تحويل المدخلات إلى DataFrame
-        input_df = pd.DataFrame([input_data])
-        
-        # تطبيق التحجيم
-        input_scaled = scaler.transform(input_df)
-
-        # التنبؤ
-        prediction_encoded = model.predict(input_scaled)[0]
-        prediction_proba = model.predict_proba(input_scaled)[0]
-        
-        # فك ترميز اسم السماد
-        fertilizer_name = le_fertilizer.inverse_transform([prediction_encoded])[0]
-        confidence = float(np.max(prediction_proba))
-        
-        # قاموس الاحتمالات
-        all_probabilities = {
-            fert: float(prob) for fert, prob in zip(le_fertilizer.classes_, prediction_proba)
-        }
-
-        return {
-            'status': 'success',
-            'fertilizer': fertilizer_name,
-            'confidence': confidence,
-            'all_probabilities': all_probabilities
-        }
-    
-    except Exception as e:
-        return {'status': 'error', 'error': str(e)}
-
-@app.route('/')
-def index():
-    return render_template('index.html')
+@app.route('/info', methods=['GET'])
+def info():
+    return jsonify({
+        'status': 'success',
+        'soil_types': soil_types,
+        'crop_types': crop_types
+    })
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        # استخراج البيانات من الطلب
         data = request.get_json()
-        
-        # التحقق من وجود جميع الحقول المطلوبة
-        required_fields = ['temperature', 'moisture', 'rainfall', 'ph', 
-                          'nitrogen', 'phosphorous', 'potassium', 'carbon', 
-                          'soil_type', 'crop_type']
-        
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'status': 'error', 'error': f'الحقل {field} مفقود'})
-        
-        # استدعاء دالة التنبؤ
-        result = predict_fertilizer(
-            data['temperature'], data['moisture'], data['rainfall'], data['ph'],
-            data['nitrogen'], data['phosphorous'], data['potassium'], data['carbon'],
-            data['soil_type'], data['crop_type']
-        )
-        
-        return jsonify(result)
-    
+
+        # استخراج البيانات من الطلب
+        temperature = float(data['temperature'])
+        moisture = float(data['moisture'])
+        rainfall = float(data['rainfall'])
+        ph = float(data['ph'])
+        nitrogen = float(data['nitrogen'])
+        phosphorous = float(data['phosphorous'])
+        potassium = float(data['potassium'])
+        carbon = float(data['carbon'])
+        soil_type = data['soil_type']
+        crop_type = data['crop_type']
+
+        # تحويل النوع النصي إلى أرقام
+        soil_type_encoded = soil_types.index(soil_type)
+        crop_type_encoded = crop_types.index(crop_type)
+
+        # تجهيز البيانات للإدخال في النموذج
+        input_data = np.array([[temperature, moisture, rainfall, ph, nitrogen, phosphorous, potassium, carbon, soil_type_encoded, crop_type_encoded]])
+
+        # التنبؤ
+        prediction = model.predict(input_data)
+        probabilities = model.predict_proba(input_data)
+
+        # الحصول على جميع الاحتمالات لكل سماد
+        all_probabilities = probabilities[0]
+        fertilizer_classes = model.classes_
+
+        # إنشاء قاموس بالاحتمالات لكل سماد
+        prob_dict = {fertilizer: prob for fertilizer, prob in zip(fertilizer_classes, all_probabilities)}
+
+        # العثور على السماد الموصى به (أعلى احتمال)
+        recommended_fertilizer = prediction[0]
+        confidence = np.max(probabilities)
+
+        return jsonify({
+            'status': 'success',
+            'fertilizer': recommended_fertilizer,
+            'confidence': confidence,
+            'all_probabilities': prob_dict
+        })
+
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)})
 
