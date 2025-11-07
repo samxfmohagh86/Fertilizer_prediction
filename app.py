@@ -23,7 +23,7 @@ try:
     # الحصول على أسماء الميزات التي تم تدريب النموذج عليها
     if hasattr(scaler, 'feature_names_in_'):
         feature_names = scaler.feature_names_in_.tolist()
-        print(f"الميزات المتوقعة: {feature_names}")
+        print(f"الميزات المتوقعة هي : {feature_names}")
     else:
         # إذا لم تكن أسماء الميزات متاحة، نفترض الميزات القياسية
         feature_names = ['Temperature', 'Moisture', 'Rainfall', 'PH', 'Nitrogen', 
